@@ -386,6 +386,7 @@
     </div>
     <div class="top-actions">
       <input id="searchInput" type="search" placeholder="Yazılarda ara..." />
+      <button id="backupBtn" class="btn-ghost">⬇ Yedek Al</button>
       <button id="newEntryBtn" class="btn-primary">+ Yeni Yazı</button>
     </div>
   </header>
@@ -817,6 +818,42 @@
   document.getElementById("newEntryBtn").addEventListener("click", ()=> openModal(null));
   document.getElementById("emptyStateBtn").addEventListener("click", ()=> openModal(null));
   document.getElementById("cancelBtn").addEventListener("click", closeModal);
+
+  document.getElementById("backupBtn").addEventListener("click", ()=>{
+    if(entries.length === 0){
+      alert("Henüz yedeklenecek bir yazı yok.");
+      return;
+    }
+    const sorted = [...entries].sort((a,b)=> a.date.localeCompare(b.date));
+
+    // 1) Okunabilir metin dosyası
+    let text = "GÜNLÜĞÜM — YEDEK\nİndirilme tarihi: " + new Date().toLocaleDateString('tr-TR') + "\n";
+    text += "=".repeat(40) + "\n\n";
+    sorted.forEach(e=>{
+      text += fmtDate(e.date) + " — " + e.title + (e.tag ? " [" + e.tag + "]" : "") + "\n";
+      text += "-".repeat(30) + "\n";
+      text += e.content + "\n";
+      if(e.photo) text += "\n(Fotoğraf: " + e.photo + ")\n";
+      text += "\n\n";
+    });
+    downloadFile(text, `gunlugum-yedek-${new Date().toISOString().slice(0,10)}.txt`, "text/plain");
+
+    // 2) Makine tarafından okunabilir JSON dosyası (ileride başka bir sisteme aktarmak için)
+    downloadFile(JSON.stringify(sorted, null, 2), `gunlugum-yedek-${new Date().toISOString().slice(0,10)}.json`, "application/json");
+  });
+
+  function downloadFile(content, filename, mime){
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   modalOverlay.addEventListener("click", (ev)=>{ if(ev.target === modalOverlay) closeModal(); });
   document.addEventListener("keydown", (ev)=>{ if(ev.key === "Escape" && !modalOverlay.hidden) closeModal(); });
 
