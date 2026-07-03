@@ -264,10 +264,11 @@
   .modal-overlay{
     position: fixed; inset:0;
     background: rgba(42,38,32,0.45);
-    display:flex; align-items:center; justify-content:center;
+    align-items:center; justify-content:center;
     padding: 20px;
     z-index: 50;
   }
+  .modal-overlay:not([hidden]){ display:flex; }
   .modal{
     background: var(--paper-card);
     border-radius: var(--radius);
@@ -300,6 +301,59 @@
   #entryForm input:focus, #entryForm textarea:focus{ border-color: var(--wine); }
   .form-row{ display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .form-actions{ display:flex; justify-content:flex-end; gap: 10px; margin-top: 6px; }
+
+  .photo-preview{
+    margin-top: 8px;
+    max-width: 160px;
+    max-height: 160px;
+    border-radius: var(--radius);
+    border: 1px solid var(--rule);
+    display: none;
+    object-fit: cover;
+  }
+  .photo-preview.show{ display:block; }
+  .photo-remove-btn{
+    display:none;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--wine-soft);
+    background:none; border:none; text-decoration: underline;
+    padding: 0;
+  }
+  .photo-remove-btn.show{ display:inline-block; }
+
+  .entry-photo{
+    width: 100%;
+    max-height: 320px;
+    object-fit: cover;
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    border: 1px solid var(--rule-light);
+    display: block;
+  }
+
+  /* ---------- Tag filters ---------- */
+  .sidebar-heading{
+    font-family:'Fraunces', serif;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    padding: 14px 10px 6px;
+    border-top: 1px solid var(--rule-light);
+    margin-top: 10px;
+  }
+  .tag-chips{ display:flex; flex-wrap:wrap; gap: 6px; padding: 4px 10px 6px; }
+  .tag-chip{
+    background: none;
+    border: 1px solid var(--teal);
+    color: var(--teal);
+    border-radius: 20px;
+    font-size: 11.5px;
+    padding: 3px 10px;
+  }
+  .tag-chip.active{ background: var(--teal); color: var(--paper-card); }
+  .tag-chip:hover{ opacity: 0.85; }
 
   /* ---------- Responsive ---------- */
   @media (max-width: 760px){
@@ -343,6 +397,10 @@
         Tüm Yazılar <span class="count" id="allCount">0</span>
       </button>
       <div id="archiveTree" class="archive-tree"></div>
+      <div id="tagSection" hidden>
+        <div class="sidebar-heading">Etiketler</div>
+        <div id="tagChips" class="tag-chips"></div>
+      </div>
     </aside>
 
     <main class="content" id="content">
@@ -385,6 +443,11 @@
       <label>Yazı
         <textarea id="entryContentInput" rows="8" required maxlength="8000" placeholder="Aklından geçenleri yaz..."></textarea>
       </label>
+      <label>Fotoğraf <span style="font-weight:400;">(opsiyonel)</span>
+        <input type="file" id="entryPhotoInput" accept="image/*" />
+        <img id="photoPreview" class="photo-preview" alt="Önizleme" />
+        <button type="button" id="photoRemoveBtn" class="photo-remove-btn">Fotoğrafı kaldır</button>
+      </label>
       <div class="form-actions">
         <button type="button" id="cancelBtn" class="btn-ghost">Vazgeç</button>
         <button type="submit" class="btn-primary">Kaydet</button>
@@ -403,11 +466,17 @@
 
   let entries = [];
   let currentFilter = "all"; // "all" or "YYYY-MM"
+  let currentTag = null;
   let searchTerm = "";
   let editingId = null;
+  let selectedPhotoFile = null;
+  let removePhotoFlag = false;
+  let existingPhotoUrl = null;
 
   const timelineEl = document.getElementById("timeline");
   const archiveTreeEl = document.getElementById("archiveTree");
+  const tagSectionEl = document.getElementById("tagSection");
+  const tagChipsEl = document.getElementById("tagChips");
   const allCountEl = document.getElementById("allCount");
   const loadingStateEl = document.getElementById("loadingState");
   const emptyStateEl = document.getElementById("emptyState");
@@ -418,6 +487,9 @@
   const dateInput = document.getElementById("entryDateInput");
   const tagInput = document.getElementById("entryTagInput");
   const contentInput = document.getElementById("entryContentInput");
+  const photoInput = document.getElementById("entryPhotoInput");
+  const photoPreview = document.getElementById("photoPreview");
+  const photoRemoveBtn = document.getElementById("photoRemoveBtn");
 
   function fmtDate(iso){
     const [y,m,d] = iso.split("-").map(Number);
@@ -430,7 +502,7 @@
   }
 
   function rowToEntry(row){
-    return { id: row.id, title: row.title, date: row.entry_date, tag: row.tag || "", content: row.content };
+    return { id: row.id, title: row.title, date: row.entry_date, tag: row.tag || "", content: row.content, photo: row.photo_url || null };
   }
 
   async function loadEntries(){
@@ -445,25 +517,52 @@
     }
   }
 
+  async function uploadPhoto(file){
+    try{
+      const ext = file.name.split('.').pop();
+      const path = `${Date.now()}-${Math.random().toString(36).slice(2,8)}.${ext}`;
+      const { error: upErr } = await sb.storage.from('diary-photos').upload(path, file);
+      if(upErr) throw upErr;
+      const { data } = sb.storage.from('diary-photos').getPublicUrl(path);
+      return data.publicUrl;
+    }catch(err){
+      console.error("Fotoğraf yükleme hatası:", err);
+      alert("Fotoğraf yüklenemedi. Supabase'de 'diary-photos' adında herkese açık bir depolama alanı (bucket) oluşturduğundan emin ol.");
+      return null;
+    }
+  }
+
   async function insertEntry(data){
     const { data: row, error } = await sb.from('diary_entries')
-      .insert({ title: data.title, entry_date: data.date, tag: data.tag || null, content: data.content })
+      .insert({ title: data.title, entry_date: data.date, tag: data.tag || null, content: data.content, photo_url: data.photo || null })
       .select().single();
-    if(error){ console.error("Ekleme hatası:", error); return null; }
+    if(error){
+      console.error("Ekleme hatası:", error);
+      alert("Yazı kaydedilemedi. Supabase tablosunun doğru kurulduğundan emin ol ve tekrar dene.");
+      return null;
+    }
     return rowToEntry(row);
   }
 
   async function updateEntryRow(id, data){
     const { error } = await sb.from('diary_entries')
-      .update({ title: data.title, entry_date: data.date, tag: data.tag || null, content: data.content })
+      .update({ title: data.title, entry_date: data.date, tag: data.tag || null, content: data.content, photo_url: data.photo || null })
       .eq('id', id);
-    if(error){ console.error("Güncelleme hatası:", error); return false; }
+    if(error){
+      console.error("Güncelleme hatası:", error);
+      alert("Yazı güncellenemedi. Tekrar dener misin?");
+      return false;
+    }
     return true;
   }
 
   async function deleteEntryRow(id){
     const { error } = await sb.from('diary_entries').delete().eq('id', id);
-    if(error){ console.error("Silme hatası:", error); return false; }
+    if(error){
+      console.error("Silme hatası:", error);
+      alert("Yazı silinemedi. Supabase tablosundaki güvenlik kuralının (RLS policy) silmeye izin verdiğinden emin ol.");
+      return false;
+    }
     return true;
   }
 
@@ -502,10 +601,37 @@
     });
   }
 
+  function buildTagFilters(){
+    const tagCounts = {};
+    entries.forEach(e=>{
+      if(e.tag) tagCounts[e.tag] = (tagCounts[e.tag] || 0) + 1;
+    });
+    const tags = Object.keys(tagCounts).sort((a,b)=> a.localeCompare(b,'tr'));
+    if(tags.length === 0){
+      tagSectionEl.hidden = true;
+      return;
+    }
+    tagSectionEl.hidden = false;
+    tagChipsEl.innerHTML = "";
+    tags.forEach(t=>{
+      const chip = document.createElement("button");
+      chip.className = "tag-chip" + (currentTag===t ? " active" : "");
+      chip.textContent = `${t} (${tagCounts[t]})`;
+      chip.addEventListener("click", ()=>{
+        currentTag = currentTag === t ? null : t;
+        render();
+      });
+      tagChipsEl.appendChild(chip);
+    });
+  }
+
   function getVisibleEntries(){
     let list = [...entries];
     if(currentFilter !== "all"){
       list = list.filter(e => monthKey(e.date) === currentFilter);
+    }
+    if(currentTag){
+      list = list.filter(e => e.tag === currentTag);
     }
     if(searchTerm.trim()){
       const q = searchTerm.toLocaleLowerCase('tr-TR');
@@ -553,6 +679,7 @@
             <span class="entry-date">${fmtDate(e.date)}</span>
           </div>
           ${e.tag ? `<span class="entry-tag">${escapeHtml(e.tag)}</span>` : ""}
+          ${e.photo ? `<img class="entry-photo" src="${escapeHtml(e.photo)}" alt="${escapeHtml(e.title)}" loading="lazy" />` : ""}
           <div class="entry-content">${escapeHtml(e.content)}</div>
           <div class="entry-actions">
             <button class="icon-btn" data-action="edit" data-id="${e.id}">Düzenle</button>
@@ -566,6 +693,7 @@
 
   function render(){
     buildArchive();
+    buildTagFilters();
     renderTimeline();
   }
 
@@ -576,6 +704,21 @@
     dateInput.value = entry ? entry.date : new Date().toISOString().slice(0,10);
     tagInput.value = entry ? (entry.tag || "") : "";
     contentInput.value = entry ? entry.content : "";
+
+    selectedPhotoFile = null;
+    removePhotoFlag = false;
+    existingPhotoUrl = entry ? (entry.photo || null) : null;
+    photoInput.value = "";
+    if(existingPhotoUrl){
+      photoPreview.src = existingPhotoUrl;
+      photoPreview.classList.add("show");
+      photoRemoveBtn.classList.add("show");
+    }else{
+      photoPreview.classList.remove("show");
+      photoPreview.src = "";
+      photoRemoveBtn.classList.remove("show");
+    }
+
     modalOverlay.hidden = false;
     setTimeout(()=> titleInput.focus(), 0);
   }
@@ -583,8 +726,36 @@
   function closeModal(){
     modalOverlay.hidden = true;
     editingId = null;
+    selectedPhotoFile = null;
+    removePhotoFlag = false;
+    existingPhotoUrl = null;
+    photoPreview.classList.remove("show");
+    photoRemoveBtn.classList.remove("show");
     entryForm.reset();
   }
+
+  photoInput.addEventListener("change", ()=>{
+    const file = photoInput.files[0];
+    if(!file) return;
+    selectedPhotoFile = file;
+    removePhotoFlag = false;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      photoPreview.src = reader.result;
+      photoPreview.classList.add("show");
+      photoRemoveBtn.classList.add("show");
+    };
+    reader.readAsDataURL(file);
+  });
+
+  photoRemoveBtn.addEventListener("click", ()=>{
+    selectedPhotoFile = null;
+    removePhotoFlag = true;
+    photoInput.value = "";
+    photoPreview.classList.remove("show");
+    photoPreview.src = "";
+    photoRemoveBtn.classList.remove("show");
+  });
 
   entryForm.addEventListener("submit", async (ev)=>{
     ev.preventDefault();
@@ -592,12 +763,20 @@
       title: titleInput.value.trim(),
       date: dateInput.value,
       tag: tagInput.value.trim(),
-      content: contentInput.value.trim()
+      content: contentInput.value.trim(),
+      photo: removePhotoFlag ? null : existingPhotoUrl
     };
     if(!data.title || !data.date || !data.content) return;
 
     const saveBtn = entryForm.querySelector('.btn-primary');
     saveBtn.disabled = true;
+
+    if(selectedPhotoFile){
+      saveBtn.textContent = "Fotoğraf yükleniyor...";
+      const url = await uploadPhoto(selectedPhotoFile);
+      if(url) data.photo = url;
+    }
+
     saveBtn.textContent = "Kaydediliyor...";
 
     if(editingId){
@@ -641,7 +820,7 @@
   modalOverlay.addEventListener("click", (ev)=>{ if(ev.target === modalOverlay) closeModal(); });
   document.addEventListener("keydown", (ev)=>{ if(ev.key === "Escape" && !modalOverlay.hidden) closeModal(); });
 
-  document.querySelector(".all-item").addEventListener("click", ()=>{ currentFilter = "all"; render(); });
+  document.querySelector(".all-item").addEventListener("click", ()=>{ currentFilter = "all"; currentTag = null; render(); });
 
   let searchDebounce;
   document.getElementById("searchInput").addEventListener("input", (ev)=>{
